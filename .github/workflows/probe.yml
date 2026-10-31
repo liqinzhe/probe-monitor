@@ -1,0 +1,24 @@
+name: 接口探活监控
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+      - name: 执行探活与通知
+        run: python3 probe_monitor.py
+        env:
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          RECEIVE_OPEN_ID: ${{ secrets.RECEIVE_OPEN_ID }}
+          PROBE_URL: https://zyjj4x.cmiiyl.com/api/ambulance/api/emergency/org/getOrgByParent
