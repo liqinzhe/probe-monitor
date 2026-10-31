@@ -140,11 +140,11 @@ def send_message(token, text, receive_id=None):
     return data["data"]["message_id"]
 
 
-def urgent_phone(token, message_id):
-    """对刚发送的消息执行电话加急"""
+def urgent_phone(token, message_id, user_id):
+    """对刚发送的消息执行电话加急（PATCH；必传 user_id_type 查询参数与 user_id_list）"""
     data = api_json(
-        f"{OPEN_API_BASE}/im/v1/messages/{message_id}/urgent_phone",
-        {},
+        f"{OPEN_API_BASE}/im/v1/messages/{message_id}/urgent_phone?user_id_type=open_id",
+        {"user_id_list": [user_id]},
         token=token,
         method="PATCH",
     )
@@ -265,7 +265,7 @@ def main():
     print(f"[{now_str()}] 飞书消息已发送: message_id={message_id}")
 
     if not is_ok:
-        urgent_phone(token, message_id)
+        urgent_phone(token, message_id, RECEIVE_OPEN_ID)
         print(f"[{now_str()}] 电话加急已触发")
 
     sys.exit(0 if is_ok else 3)
