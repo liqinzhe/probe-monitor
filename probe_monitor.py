@@ -25,9 +25,8 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 
-PROBE_URL = os.environ.get(
-    "PROBE_URL",
-    "https://zyjj4x.cmiiyl.com/api/ambulance/api/emergency/org/getOrgByParent",
+PROBE_URL = os.environ.get("PROBE_URL") or (
+    "https://zyjj4x.cmiiyl.com/api/ambulance/api/emergency/org/getOrgByParent"
 )
 APP_ID = os.environ.get("FEISHU_APP_ID", "")
 APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
@@ -43,7 +42,18 @@ OPEN_API_BASE = "https://open.feishu.cn/open-apis"
 
 
 def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """返回北京时间（Asia/Shanghai）字符串；GitHub runner 默认 UTC，必须显式转换"""
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        # 兜底：环境缺少 tzdata 时按 UTC+8 固定偏移（中国无夏令时）
+        import time as _time
+
+        return _time.strftime(
+            "%Y-%m-%d %H:%M:%S", _time.localtime(_time.time() + 8 * 3600)
+        )
 
 
 def api_json(url, payload=None, token=None, method=None):
@@ -113,12 +123,13 @@ def get_tenant_access_token():
     return data["tenant_access_token"]
 
 
-def send_message(token, text):
-    """以应用身份给值班人发文本消息，返回 message_id"""
+def send_message(token, text, receive_id=None):
+    """以应用身份给值班人发文本消息，返回 message_id；receive_id 缺省用 RECEIVE_OPEN_ID"""
+    receive_id = receive_id or RECEIVE_OPEN_ID
     data = api_json(
         f"{OPEN_API_BASE}/im/v1/messages?receive_id_type=open_id",
         {
-            "receive_id": RECEIVE_OPEN_ID,
+            "receive_id": receive_id,
             "msg_type": "text",
             "content": json.dumps({"text": text}, ensure_ascii=False),
         },
@@ -160,8 +171,23 @@ def resolve_recipient(token):
     if not users:
         raise RuntimeError("未匹配到用户：请确认手机号/邮箱属于当前应用所在租户成员")
     for u in users:
-        print(f"open_id: {u.get('user_id')} | 手机号: {u.get('mobile', '')} | 邮箱: {u.get('email', '')}")
-    print("请把上面的 open_id 填入 GitHub Secrets 的 RECEIVE_OPEN_ID")
+        oid = (u.get("user_id") or "").strip()
+        print(
+            f"解析到 open_id: [{oid}] | 手机号: {u.get('mobile', '')} | 邮箱: {u.get('email', '')}"
+        )
+        if oid:
+            print("→ 正在用该 open_id 发送一条测试消息验证可用性...")
+            try:
+                mid = send_message(
+                    token, "✅ 探活监控测试消息：新 open_id 验证成功", receive_id=oid
+                )
+                print(
+                    f"→ ✅ 测试消息发送成功(message_id={mid})：此 open_id 可用，"
+                    "请原样填入 GitHub Secrets 的 RECEIVE_OPEN_ID"
+                )
+            except Exception as e:
+                print(f"→ ❌ 测试消息发送失败：{e}")
+    print("提示：若测试发送失败，说明该 open_id 不在应用可见范围内（常见于应用挂在'测试企业'环境）")
 
 
 def build_message(ts, elapsed_ms, fail_count, is_ok, summaries=None):
@@ -227,6 +253,13 @@ def main():
         )
         sys.exit(2)
 
+    # 诊断：打印当前 Secrets 中 open_id 的长度与首尾片段，便于与解析值比对
+    rid = RECEIVE_OPEN_ID.strip()
+    print(
+        f"[诊断] 当前 RECEIVE_OPEN_ID 长度={len(rid)} "
+        f"前缀={rid[:8]} 后缀={rid[-4:]}"
+    )
+
     token = get_tenant_access_token()
     message_id = send_message(token, text)
     print(f"[{now_str()}] 飞书消息已发送: message_id={message_id}")
@@ -240,4 +273,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-#（注：内容由AI生成）
