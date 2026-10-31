@@ -10,9 +10,11 @@
   FEISHU_APP_SECRET 飞书自建应用 App Secret
   RECEIVE_OPEN_ID   接收通知的飞书用户 open_id
   (可选) PROBE_URL  探活接口地址，默认下方业务地址
+  (可选) RECEIVE_MOBILE / RECEIVE_EMAIL  用于 --resolve-recipient 解析 open_id
 用法：
-  python3 probe_monitor.py            # 正常执行（探测+通知+异常电话加急）
-  python3 probe_monitor.py --probe-only  # 只探测并打印结果，不通知（用于本地验证）
+  python3 probe_monitor.py                    # 正常执行（探测+通知+异常电话加急）
+  python3 probe_monitor.py --probe-only       # 只探测并打印结果，不通知（本地验证）
+  python3 probe_monitor.py --resolve-recipient # 用手机号/邮箱换应用视角的 open_id
 """
 
 import json
@@ -30,6 +32,8 @@ PROBE_URL = os.environ.get(
 APP_ID = os.environ.get("FEISHU_APP_ID", "")
 APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 RECEIVE_OPEN_ID = os.environ.get("RECEIVE_OPEN_ID", "")
+RECEIVE_MOBILE = os.environ.get("RECEIVE_MOBILE", "18811395648")
+RECEIVE_EMAIL = os.environ.get("RECEIVE_EMAIL", "")
 HEALTH_MARKER = "API NOT EXIST"
 RETRY_INTERVAL_SECONDS = 10
 MAX_ATTEMPTS = 3
@@ -40,6 +44,30 @@ OPEN_API_BASE = "https://open.feishu.cn/open-apis"
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def api_json(url, payload=None, token=None, method=None):
+    """调用飞书 OpenAPI，统一处理 HTTP 错误并输出飞书返回的错误详情"""
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = (
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        if payload is not None
+        else None
+    )
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers=headers,
+        method=method or ("POST" if data is not None else "GET"),
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"飞书 API 返回 HTTP {e.code}: {body[:1000]}") from e
 
 
 def probe_once():
@@ -76,17 +104,10 @@ def probe_once():
 
 def get_tenant_access_token():
     """换取 tenant_access_token（应用身份，用于发消息与加急）"""
-    payload = json.dumps(
-        {"app_id": APP_ID, "app_secret": APP_SECRET}
-    ).encode("utf-8")
-    req = urllib.request.Request(
+    data = api_json(
         f"{OPEN_API_BASE}/auth/v3/tenant_access_token/internal",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        {"app_id": APP_ID, "app_secret": APP_SECRET},
     )
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
     if data.get("code") != 0:
         raise RuntimeError(f"获取 tenant_access_token 失败: {data}")
     return data["tenant_access_token"]
@@ -94,46 +115,53 @@ def get_tenant_access_token():
 
 def send_message(token, text):
     """以应用身份给值班人发文本消息，返回 message_id"""
-    payload = json.dumps(
+    data = api_json(
+        f"{OPEN_API_BASE}/im/v1/messages?receive_id_type=open_id",
         {
             "receive_id": RECEIVE_OPEN_ID,
             "msg_type": "text",
             "content": json.dumps({"text": text}, ensure_ascii=False),
-        }
-    ).encode("utf-8")
-    req = urllib.request.Request(
-        f"{OPEN_API_BASE}/im/v1/messages?receive_id_type=open_id",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
         },
-        method="POST",
+        token=token,
     )
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
     if data.get("code") != 0:
-        raise RuntimeError(f"发送消息失败: {data}")
+        raise RuntimeError(f"发送消息失败(code={data.get('code')}): {data.get('msg')}")
     return data["data"]["message_id"]
 
 
 def urgent_phone(token, message_id):
     """对刚发送的消息执行电话加急"""
-    payload = json.dumps({}).encode("utf-8")
-    req = urllib.request.Request(
+    data = api_json(
         f"{OPEN_API_BASE}/im/v1/messages/{message_id}/urgent_phone",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-        },
+        {},
+        token=token,
         method="PATCH",
     )
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
     if data.get("code") != 0:
-        raise RuntimeError(f"电话加急失败: {data}")
+        raise RuntimeError(f"电话加急失败(code={data.get('code')}): {data.get('msg')}")
     return data
+
+
+def resolve_recipient(token):
+    """用手机号/邮箱换取当前应用视角下的 open_id（open_id 按应用隔离，必须用本应用解析）"""
+    payload = {}
+    if RECEIVE_MOBILE:
+        payload["mobiles"] = [RECEIVE_MOBILE]
+    if RECEIVE_EMAIL:
+        payload["emails"] = [RECEIVE_EMAIL]
+    data = api_json(
+        f"{OPEN_API_BASE}/contact/v3/users/batch_get_id?user_id_type=open_id",
+        payload,
+        token=token,
+    )
+    if data.get("code") != 0:
+        raise RuntimeError(f"解析 open_id 失败(code={data.get('code')}): {data.get('msg')}")
+    users = data.get("data", {}).get("user_list", [])
+    if not users:
+        raise RuntimeError("未匹配到用户：请确认手机号/邮箱属于当前应用所在租户成员")
+    for u in users:
+        print(f"open_id: {u.get('user_id')} | 手机号: {u.get('mobile', '')} | 邮箱: {u.get('email', '')}")
+    print("请把上面的 open_id 填入 GitHub Secrets 的 RECEIVE_OPEN_ID")
 
 
 def build_message(ts, elapsed_ms, fail_count, is_ok, summaries=None):
@@ -154,6 +182,14 @@ def build_message(ts, elapsed_ms, fail_count, is_ok, summaries=None):
 
 
 def main():
+    if "--resolve-recipient" in sys.argv:
+        if not APP_ID or not APP_SECRET:
+            print("错误: 缺少 FEISHU_APP_ID / FEISHU_APP_SECRET 环境变量", file=sys.stderr)
+            sys.exit(2)
+        token = get_tenant_access_token()
+        resolve_recipient(token)
+        sys.exit(0)
+
     probe_only = "--probe-only" in sys.argv
 
     summaries = []
@@ -185,7 +221,10 @@ def main():
         sys.exit(0 if is_ok else 1)
 
     if not APP_ID or not APP_SECRET or not RECEIVE_OPEN_ID:
-        print("错误: 缺少 FEISHU_APP_ID / FEISHU_APP_SECRET / RECEIVE_OPEN_ID 环境变量", file=sys.stderr)
+        print(
+            "错误: 缺少 FEISHU_APP_ID / FEISHU_APP_SECRET / RECEIVE_OPEN_ID 环境变量",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     token = get_tenant_access_token()
