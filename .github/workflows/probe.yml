@@ -10,6 +10,10 @@ on:
         description: "运行模式：probe=正常探测（默认）；resolve-recipient=解析收件人 open_id"
         required: false
         default: probe
+      probe_url:
+        description: "模拟异常用：填一个不存在的地址可触发连续3次失败+电话加急；留空则探测真实接口"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -35,5 +39,4 @@ jobs:
           RECEIVE_OPEN_ID: ${{ secrets.RECEIVE_OPEN_ID }}
           RECEIVE_MOBILE: 18811395648
           RECEIVE_EMAIL: ${{ secrets.RECEIVE_EMAIL }}
-          PROBE_URL: https://zyjj4x.cmiiyl.com/api/ambulance/api/emergency/org/getOrgByParent
-#（注：内容由AI生成）
+          PROBE_URL: ${{ inputs.probe_url }}
