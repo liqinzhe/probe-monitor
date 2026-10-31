@@ -2,8 +2,14 @@ name: 接口探活监控
 
 on:
   schedule:
+    # 每 5 分钟一轮（GitHub Actions 最短间隔）
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "运行模式：probe=正常探测（默认）；resolve-recipient=解析收件人 open_id"
+        required: false
+        default: probe
 
 permissions:
   contents: read
@@ -15,10 +21,19 @@ jobs:
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
+
       - name: 执行探活与通知
-        run: python3 probe_monitor.py
+        run: |
+          if [ "${{ inputs.mode }}" == "resolve-recipient" ]; then
+            python3 probe_monitor.py --resolve-recipient
+          else
+            python3 probe_monitor.py
+          fi
         env:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           RECEIVE_OPEN_ID: ${{ secrets.RECEIVE_OPEN_ID }}
+          RECEIVE_MOBILE: 18811395648
+          RECEIVE_EMAIL: ${{ secrets.RECEIVE_EMAIL }}
           PROBE_URL: https://zyjj4x.cmiiyl.com/api/ambulance/api/emergency/org/getOrgByParent
+#（注：内容由AI生成）
